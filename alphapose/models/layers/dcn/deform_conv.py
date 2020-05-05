@@ -1,3 +1,9 @@
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+import glob
+import os.path
 import math
 
 import torch
@@ -6,7 +12,39 @@ from torch.autograd import Function
 from torch.autograd.function import once_differentiable
 from torch.nn.modules.utils import _pair
 
-from . import deform_conv_cuda
+try:
+    from torch.utils.cpp_extension import load
+    from torch.utils.cpp_extension import CUDA_HOME
+except ImportError:
+    raise ImportError(
+        "The cpp layer extensions requires PyTorch 0.4 or higher")
+
+
+def _load_extensions():
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    this_dir = os.path.join(this_dir, "src")
+
+    sources_main = glob.glob(os.path.join(this_dir, "deform_conv_*.cpp"))
+    sources_cuda = glob.glob(os.path.join(this_dir, "deform_conv_*.cu"))
+
+    sources = sources_main + sources_cuda
+
+    extra_cflags = []
+    extra_cuda_cflags = []
+    if torch.cuda.is_available() and CUDA_HOME is not None:
+        extra_cflags = ["-O3", "-DWITH_CUDA"]
+        extra_cuda_cflags = ["--expt-extended-lambda"]
+    sources = [os.path.join(this_dir, s) for s in sources]
+    extra_include_paths = [this_dir]
+    return load(
+        name="ap_deform_conv_ext_lib",
+        sources=sources,
+        extra_cflags=extra_cflags,
+        extra_include_paths=extra_include_paths,
+        extra_cuda_cflags=extra_cuda_cflags,
+    )
+
+_backend = _load_extensions()
 
 
 class DeformConvFunction(Function):
@@ -47,7 +85,7 @@ class DeformConvFunction(Function):
             cur_im2col_step = min(ctx.im2col_step, input.shape[0])
             assert (input.shape[0] %
                     cur_im2col_step) == 0, 'im2col step must divide batchsize'
-            deform_conv_cuda.deform_conv_forward_cuda(
+            _backend.deform_conv_forward_cuda(
                 input, weight, offset, output, ctx.bufs_[0], ctx.bufs_[1],
                 weight.size(3), weight.size(2), ctx.stride[1], ctx.stride[0],
                 ctx.padding[1], ctx.padding[0], ctx.dilation[1],
@@ -72,7 +110,7 @@ class DeformConvFunction(Function):
             if ctx.needs_input_grad[0] or ctx.needs_input_grad[1]:
                 grad_input = torch.zeros_like(input)
                 grad_offset = torch.zeros_like(offset)
-                deform_conv_cuda.deform_conv_backward_input_cuda(
+                _backend.deform_conv_backward_input_cuda(
                     input, offset, grad_output, grad_input,
                     grad_offset, weight, ctx.bufs_[0], weight.size(3),
                     weight.size(2), ctx.stride[1], ctx.stride[0],
@@ -82,7 +120,7 @@ class DeformConvFunction(Function):
 
             if ctx.needs_input_grad[2]:
                 grad_weight = torch.zeros_like(weight)
-                deform_conv_cuda.deform_conv_backward_parameters_cuda(
+                _backend.deform_conv_backward_parameters_cuda(
                     input, offset, grad_output,
                     grad_weight, ctx.bufs_[0], ctx.bufs_[1], weight.size(3),
                     weight.size(2), ctx.stride[1], ctx.stride[0],
@@ -140,7 +178,7 @@ class ModulatedDeformConvFunction(Function):
         output = input.new_empty(
             ModulatedDeformConvFunction._infer_shape(ctx, input, weight))
         ctx._bufs = [input.new_empty(0), input.new_empty(0)]
-        deform_conv_cuda.modulated_deform_conv_cuda_forward(
+        _backend.modulated_deform_conv_cuda_forward(
             input, weight, bias, ctx._bufs[0], offset, mask, output,
             ctx._bufs[1], weight.shape[2], weight.shape[3], ctx.stride,
             ctx.stride, ctx.padding, ctx.padding, ctx.dilation, ctx.dilation,
@@ -158,7 +196,7 @@ class ModulatedDeformConvFunction(Function):
         grad_mask = torch.zeros_like(mask)
         grad_weight = torch.zeros_like(weight)
         grad_bias = torch.zeros_like(bias)
-        deform_conv_cuda.modulated_deform_conv_cuda_backward(
+        _backend.modulated_deform_conv_cuda_backward(
             input, weight, bias, ctx._bufs[0], offset, mask, ctx._bufs[1],
             grad_input, grad_weight, grad_bias, grad_offset, grad_mask,
             grad_output, weight.shape[2], weight.shape[3], ctx.stride,

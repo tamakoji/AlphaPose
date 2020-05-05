@@ -1,10 +1,49 @@
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+import glob
+import os.path
+
 import torch
 import torch.nn as nn
 from torch.autograd import Function
 from torch.autograd.function import once_differentiable
 from torch.nn.modules.utils import _pair
 
-from . import deform_pool_cuda
+try:
+    from torch.utils.cpp_extension import load
+    from torch.utils.cpp_extension import CUDA_HOME
+except ImportError:
+    raise ImportError(
+        "The cpp layer extensions requires PyTorch 0.4 or higher")
+
+
+def _load_extensions():
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    this_dir = os.path.join(this_dir, "src")
+
+    sources_main = glob.glob(os.path.join(this_dir, "deform_pool_*.cpp"))
+    sources_cuda = glob.glob(os.path.join(this_dir, "deform_pool_*.cu"))
+
+    sources = sources_main + sources_cuda
+
+    extra_cflags = []
+    extra_cuda_cflags = []
+    if torch.cuda.is_available() and CUDA_HOME is not None:
+        extra_cflags = ["-O3", "-DWITH_CUDA"]
+        extra_cuda_cflags = ["--expt-extended-lambda"]
+    sources = [os.path.join(this_dir, s) for s in sources]
+    extra_include_paths = [this_dir]
+    return load(
+        name="ap_deform_pool_ext_lib",
+        sources=sources,
+        extra_cflags=extra_cflags,
+        extra_include_paths=extra_include_paths,
+        extra_cuda_cflags=extra_cuda_cflags,
+    )
+
+_backend = _load_extensions()
 
 
 class DeformRoIPoolingFunction(Function):
@@ -44,7 +83,7 @@ class DeformRoIPoolingFunction(Function):
         n = rois.shape[0]
         output = data.new_empty(n, out_channels, out_size, out_size)
         output_count = data.new_empty(n, out_channels, out_size, out_size)
-        deform_pool_cuda.deform_psroi_pooling_cuda_forward(
+        _backend.deform_psroi_pooling_cuda_forward(
             data, rois, offset, output, output_count, ctx.no_trans,
             ctx.spatial_scale, ctx.out_channels, ctx.group_size, ctx.out_size,
             ctx.part_size, ctx.sample_per_part, ctx.trans_std)
@@ -67,7 +106,7 @@ class DeformRoIPoolingFunction(Function):
         grad_rois = None
         grad_offset = torch.zeros_like(offset)
 
-        deform_pool_cuda.deform_psroi_pooling_cuda_backward(
+        _backend.deform_psroi_pooling_cuda_backward(
             grad_output, data, rois, offset, output_count, grad_input,
             grad_offset, ctx.no_trans, ctx.spatial_scale, ctx.out_channels,
             ctx.group_size, ctx.out_size, ctx.part_size, ctx.sample_per_part,

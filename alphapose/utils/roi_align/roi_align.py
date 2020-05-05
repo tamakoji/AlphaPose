@@ -1,9 +1,49 @@
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+import glob
+import os.path
+
+import torch
 import torch.nn as nn
 from torch.autograd import Function
 from torch.autograd.function import once_differentiable
 from torch.nn.modules.utils import _pair
 
-from . import roi_align_cuda
+try:
+    from torch.utils.cpp_extension import load
+    from torch.utils.cpp_extension import CUDA_HOME
+except ImportError:
+    raise ImportError(
+        "The cpp layer extensions requires PyTorch 0.4 or higher")
+
+
+def _load_extensions():
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    this_dir = os.path.join(this_dir, "src")
+
+    sources_main = glob.glob(os.path.join(this_dir, "roi_align_*.cpp"))
+    sources_cuda = glob.glob(os.path.join(this_dir, "roi_align_*.cu"))
+
+    sources = sources_main + sources_cuda
+
+    extra_cflags = []
+    extra_cuda_cflags = []
+    if torch.cuda.is_available() and CUDA_HOME is not None:
+        extra_cflags = ["-O3", "-DWITH_CUDA"]
+        extra_cuda_cflags = ["--expt-extended-lambda"]
+    sources = [os.path.join(this_dir, s) for s in sources]
+    extra_include_paths = [this_dir]
+    return load(
+        name="ap_roi_align_ext_lib",
+        sources=sources,
+        extra_cflags=extra_cflags,
+        extra_include_paths=extra_include_paths,
+        extra_cuda_cflags=extra_cuda_cflags,
+    )
+
+_backend = _load_extensions()
 
 
 class RoIAlignFunction(Function):
@@ -22,8 +62,8 @@ class RoIAlignFunction(Function):
 
         output = features.new_zeros(num_rois, num_channels, out_h, out_w)
         if features.is_cuda:
-            roi_align_cuda.forward(features, rois, out_h, out_w, spatial_scale,
-                                   sample_num, output)
+            _backend.forward(features, rois, out_h, out_w, spatial_scale,
+                             sample_num, output)
         else:
             raise NotImplementedError
 
@@ -46,9 +86,9 @@ class RoIAlignFunction(Function):
         if ctx.needs_input_grad[0]:
             grad_input = rois.new_zeros(batch_size, num_channels, data_height,
                                         data_width)
-            roi_align_cuda.backward(grad_output.contiguous(), rois, out_h,
-                                    out_w, spatial_scale, sample_num,
-                                    grad_input)
+            _backend.backward(grad_output.contiguous(), rois, out_h,
+                              out_w, spatial_scale, sample_num,
+                              grad_input)
 
         return grad_input, grad_rois, None, None, None
 

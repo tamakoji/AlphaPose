@@ -1,8 +1,46 @@
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+import glob
+import os.path
+
 import numpy as np
 import torch
 
-from . import nms_cpu, nms_cuda
-from .soft_nms_cpu import soft_nms_cpu
+try:
+    from torch.utils.cpp_extension import load
+    from torch.utils.cpp_extension import CUDA_HOME
+except ImportError:
+    raise ImportError(
+        "The cpp layer extensions requires PyTorch 0.4 or higher")
+
+
+def _load_extensions():
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    this_dir = os.path.join(this_dir, "src")
+
+    sources_main = glob.glob(os.path.join(this_dir, "nms*.cpp"))
+    sources_cuda = glob.glob(os.path.join(this_dir, "nms*.cu"))
+
+    sources = sources_main + sources_cuda
+
+    extra_cflags = []
+    extra_cuda_cflags = []
+    if torch.cuda.is_available() and CUDA_HOME is not None:
+        extra_cflags = ["-O3", "-DWITH_CUDA"]
+        extra_cuda_cflags = ["--expt-extended-lambda"]
+    sources = [os.path.join(this_dir, s) for s in sources]
+    extra_include_paths = [this_dir]
+    return load(
+        name="ap_nms_ext_lib",
+        sources=sources,
+        extra_cflags=extra_cflags,
+        extra_include_paths=extra_include_paths,
+        extra_cuda_cflags=extra_cuda_cflags,
+    )
+
+_backend = _load_extensions()
 
 
 def nms(dets, iou_thr, device_id=None):
@@ -40,14 +78,17 @@ def nms(dets, iou_thr, device_id=None):
         inds = dets_th.new_zeros(0, dtype=torch.long)
     else:
         if dets_th.is_cuda:
-            inds = nms_cuda.nms(dets_th, iou_thr)
+            inds = _backend.nms_cuda(dets_th, iou_thr)
         else:
-            inds = nms_cpu.nms(dets_th, iou_thr)
+            inds = _backend.nms_cpu(dets_th, iou_thr)
 
     if is_numpy:
         inds = inds.cpu().numpy()
     return dets[inds, :], inds
 
+
+"""
+todo : cython pyx to native c? but where below code being used??
 
 def soft_nms(dets, iou_thr, method='linear', sigma=0.5, min_score=1e-3):
     if isinstance(dets, torch.Tensor):
@@ -76,3 +117,4 @@ def soft_nms(dets, iou_thr, method='linear', sigma=0.5, min_score=1e-3):
             inds, dtype=torch.long)
     else:
         return new_dets.astype(np.float32), inds.astype(np.int64)
+"""
