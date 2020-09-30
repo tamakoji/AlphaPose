@@ -3,6 +3,7 @@ import argparse
 import os
 import platform
 import sys
+sys.path.append(os.path.abspath("."))
 import time
 
 import numpy as np
