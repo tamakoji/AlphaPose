@@ -3,6 +3,9 @@
     <img src="docs/logo.jpg", width="400">
 </div>
 
+## *This is a modified Fork of original AlphaPose*
+- Enabled ninja autobuild. No need to run setup.py to pre-compile and install
+- Supports Pytorch 1.5.0 (1.6.0 won't work)
 
 ## News!
 - Aug 2020: [**v0.4.0** version](https://github.com/MVIG-SJTU/AlphaPose) of AlphaPose is released! Stronger tracking! Include whole body(face,hand,foot) keypoints!
